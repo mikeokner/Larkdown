@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - master
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate macOS build (${{ matrix.macos }})
+    runs-on: ${{ matrix.macos }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        macos:
+          - macos-15
+          - macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Environment
+        run: scripts/doctor.sh
+
+      - name: Check shell scripts
+        run: |
+          sh -n scripts/build.sh
+          sh -n scripts/doctor.sh
+          sh -n scripts/install-local.sh
+          sh -n scripts/install.sh
+          sh -n scripts/package-release.sh
+          sh -n scripts/check-distribution.sh
+          sh -n scripts/test.sh
+          sh -n scripts/uninstall-local.sh
+
+      - name: Test
+        run: scripts/test.sh
+
+      - name: Build
+        run: scripts/build.sh
+
+      - name: Build and inspect direct distribution
+        run: |
+          CONFIGURATION=Release scripts/build.sh
+          scripts/check-distribution.sh .build/DerivedData/Build/Products/Release/Larkdown.app

@@ -1,0 +1,125 @@
+name: Release candidate
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version or candidate label without v (0.1.0 or 0.1.0-rc.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build signed draft
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve and validate release inputs
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -eu
+          RELEASE_NAME="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          printf '%s\n' "$RELEASE_NAME" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
+          VERSION="${RELEASE_NAME%%-rc.*}"
+          BUILD_NUMBER="$(date -u +%Y%m%d%H%M%S)"
+          printf '%s\n' "$BUILD_NUMBER" | grep -Eq '^[1-9][0-9]*$'
+          TAG="v$RELEASE_NAME"
+          REMOTE_TAG=$(git ls-remote origin "refs/tags/$TAG")
+          if [ -n "$REMOTE_TAG" ]; then
+            git fetch --no-tags origin "refs/tags/$TAG"
+            if [ "$(git rev-parse 'FETCH_HEAD^{commit}')" != "$GITHUB_SHA" ]; then
+              echo 'The existing release tag does not match the checked-out commit.' >&2
+              exit 1
+            fi
+          fi
+          printf 'version=%s\nrelease_name=%s\nbuild_number=%s\ntag=v%s\n' "$VERSION" "$RELEASE_NAME" "$BUILD_NUMBER" "$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Check required release configuration
+        env:
+          CERTIFICATE: ${{ secrets.DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_CI_KEYCHAIN_PASSWORD }}
+          TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          ISSUER: ${{ secrets.APPLE_NOTARIZATION_ISSUER }}
+          KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+          NOTARY_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
+          UPDATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          UPDATE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: |
+          set -eu
+          for name in CERTIFICATE CERTIFICATE_PASSWORD KEYCHAIN_PASSWORD TEAM ISSUER KEY_ID NOTARY_KEY UPDATE_KEY UPDATE_PUBLIC_KEY; do
+            if [ -z "${!name}" ]; then echo "Missing release configuration: $name" >&2; exit 1; fi
+          done
+          scripts/doctor.sh
+
+      - name: Import signing credentials
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.DEVELOPER_ID_APPLICATION_CERTIFICATE_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.DEVELOPER_ID_APPLICATION_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_CI_KEYCHAIN_PASSWORD }}
+          APPLE_NOTARIZATION_ISSUER: ${{ secrets.APPLE_NOTARIZATION_ISSUER }}
+          APPLE_NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+          APPLE_NOTARIZATION_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          set -eu
+          umask 077
+          KEYCHAIN="$RUNNER_TEMP/larkdown-release.keychain-db"
+          printf '%s' "$CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/developer-id.p12"
+          printf '%s' "$APPLE_NOTARIZATION_KEY" > "$RUNNER_TEMP/notarization-key.p8"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle-private-key"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 7200 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" "$HOME/Library/Keychains/login.keychain-db"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$KEYCHAIN" -P "$CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          xcrun notarytool store-credentials larkdown-notary --keychain "$KEYCHAIN" \
+            --key "$RUNNER_TEMP/notarization-key.p8" --key-id "$APPLE_NOTARIZATION_KEY_ID" --issuer "$APPLE_NOTARIZATION_ISSUER"
+          security default-keychain -d user -s "$KEYCHAIN"
+
+      - name: Build signed artifacts
+        env:
+          SIGNING_MODE: developer-id
+          DEVELOPMENT_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+          NOTARIZE: "1"
+          NOTARY_PROFILE: larkdown-notary
+          RELEASE_NAME: ${{ steps.version.outputs.release_name }}
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD_NUMBER: ${{ steps.version.outputs.build_number }}
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: SPARKLE_PRIVATE_KEY_FILE="$RUNNER_TEMP/sparkle-private-key" scripts/package-release.sh "$VERSION" "$BUILD_NUMBER"
+
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NAME: ${{ steps.version.outputs.release_name }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -eu
+          PRERELEASE=false
+          case "$RELEASE_NAME" in *-rc.*) PRERELEASE=true ;; esac
+          gh release create "$TAG" "dist/release/Larkdown-$RELEASE_NAME"/* \
+            --target "$GITHUB_SHA" --title "Larkdown $RELEASE_NAME" \
+            --draft --prerelease="$PRERELEASE" --notes-file RELEASE_NOTES.md
+
+      - name: Remove temporary signing material
+        if: always()
+        run: |
+          security default-keychain -d user -s "$HOME/Library/Keychains/login.keychain-db" || true
+          security delete-keychain "$RUNNER_TEMP/larkdown-release.keychain-db" || true
+          rm -f "$RUNNER_TEMP/developer-id.p12" "$RUNNER_TEMP/notarization-key.p8" "$RUNNER_TEMP/sparkle-private-key"
