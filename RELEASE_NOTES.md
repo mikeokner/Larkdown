@@ -1,3 +1,8 @@
+# Larkdown 0.1.1
+
+- Implement signing check on Sparkle update feed.
+- Move GitHub secrets to a release-specific environment for tag builds.
+
 # Larkdown 0.1.0
 
 Larkdown is a native macOS editor and previewer for local Markdown files.
