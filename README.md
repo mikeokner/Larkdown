@@ -1,6 +1,6 @@
 <h1>
 <p align="center">
-  <img src="./Larkdown/Assets.xcassets/AppIcon.appiconset/icon_128x128.png" alt="Logo" width="128">
+  <img src="./assets/logo.png" alt="Logo" width="128">
   <br>Larkdown.app
 </h1>
   <p align="center">

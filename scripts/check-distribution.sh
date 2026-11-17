@@ -17,6 +17,9 @@ fi
 test -d "$APP/Contents/Frameworks/Sparkle.framework"
 otool -L "$BINARY" | grep -q Sparkle
 /usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$PLIST" | grep -q '^https://'
+for key in SUVerifyUpdateBeforeExtraction SURequireSignedFeed; do
+    [ "$(/usr/libexec/PlistBuddy -c "Print :$key" "$PLIST")" = true ] || { echo "$key must be enabled." >&2; exit 1; }
+done
 
 # Signing problems such as library validation only show up at launch.
 "$BINARY" >/dev/null 2>&1 &

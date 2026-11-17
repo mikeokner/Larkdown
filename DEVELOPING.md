@@ -67,8 +67,8 @@ scripts/check-distribution.sh .build/DerivedData/Build/Products/Release/Larkdown
 ```
 
 The check confirms that the app has no App Sandbox entitlement, embeds and links
-Sparkle, includes `ThirdPartyNotices.txt`, has an HTTPS update feed, and stays
-running for 3 seconds after launch. For Developer ID builds, it also requires the
+Sparkle, includes `ThirdPartyNotices.txt`, has an HTTPS update feed, requires
+signed feeds, and stays running for 3 seconds after launch. For Developer ID builds, it also requires the
 hardened runtime. Local builds are signed ad hoc and skip the hardened runtime,
 because its library validation rejects the ad hoc signed Sparkle framework;
 `scripts/package-release.sh` enables it for Developer ID builds.
@@ -187,8 +187,10 @@ xcodebuild -resolvePackageDependencies -project Larkdown.xcodeproj \
 Use the printed public key for `SPARKLE_PUBLIC_ED_KEY`. The package script accepts
 the current 32-byte private-seed export format and checks that it matches the
 public key before building. Never commit the seed or private signing credentials.
-Keep the same update key across releases; follow Sparkle's key-rotation procedure
-if you need to change it.
+Keep the same update key across releases and keep a secure backup. The app sets
+`SURequireSignedFeed` and `SUVerifyUpdateBeforeExtraction`, so Sparkle can rotate
+the key only through a Developer ID signed disk image update. Larkdown publishes
+ZIP updates, so if you lose the key, installed copies can't update themselves.
 
 ```sh
 SIGNING_MODE=developer-id \
@@ -202,8 +204,10 @@ scripts/package-release.sh 0.1.0
 The package script archives both architectures, exports with `developer-id` to
 sign nested Sparkle services, verifies signing, notarizes and staples the app,
 and then creates its ZIP. It signs, notarizes, and staples the DMG separately.
-The final ZIP and appcast receive Sparkle signatures. Third-party licenses ship
-in the app bundle.
+The final ZIP and appcast receive Sparkle signatures. The app rejects unsigned
+feeds, so re-sign `appcast.xml` with `sign_update` after any edit. If you add
+release notes links, sign those files too. Third-party licenses ship in the app
+bundle.
 
 Use increasing build numbers for every public release. The default is a UTC
 second timestamp, also used by CI. If you explicitly supply a local build number,
@@ -223,7 +227,12 @@ check. The release workflow uses `macos-26`, validates its inputs and required
 configuration, then builds signed artifacts in an ephemeral keychain. It removes
 temporary private keys and the keychain in an `always()` cleanup step.
 
-Configure these repository secrets:
+Release credentials live in a GitHub environment named `release`. Its deployment
+policy allows only `v*` tags, so workflows on branches and pull requests can't
+read them. A tag ruleset limits creating, moving, and deleting `v*` tags to
+repository admins.
+
+Configure these `release` environment secrets:
 
 ```text
 APPLE_TEAM_ID
@@ -240,8 +249,8 @@ Set the repository variable `SPARKLE_PUBLIC_ED_KEY` to the matching public key.
 The certificate secret is a base64-encoded `.p12` containing the certificate and
 private key. The Sparkle secret contains the exported base64 seed text.
 
-A `v0.1.0` or `v0.1.0-rc.1` tag, or manual dispatch with that version label,
-creates a **draft** GitHub release using `RELEASE_NOTES.md`. Candidate labels also
+Pushing a `v0.1.0` or `v0.1.0-rc.1` tag creates a **draft** GitHub release using
+`RELEASE_NOTES.md` from the tagged commit. Candidate labels also
 set GitHub's prerelease flag. Publishing remains a separate maintainer action.
 
 Release candidates (`-rc.N`) check the signing pipeline. They stay drafts and do

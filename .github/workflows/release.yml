@@ -4,12 +4,6 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
-    inputs:
-      version:
-        description: "Version or candidate label without v (0.1.0 or 0.1.0-rc.1)"
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -23,30 +17,20 @@ jobs:
     name: Build signed draft
     runs-on: macos-26
     timeout-minutes: 60
+    # Release secrets live in this environment, which only v* tags can use.
+    environment: release
     steps:
       - uses: actions/checkout@v4
 
       - name: Resolve and validate release inputs
         id: version
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -eu
-          RELEASE_NAME="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          RELEASE_NAME="${GITHUB_REF_NAME#v}"
           printf '%s\n' "$RELEASE_NAME" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
           VERSION="${RELEASE_NAME%%-rc.*}"
           BUILD_NUMBER="$(date -u +%Y%m%d%H%M%S)"
-          printf '%s\n' "$BUILD_NUMBER" | grep -Eq '^[1-9][0-9]*$'
-          TAG="v$RELEASE_NAME"
-          REMOTE_TAG=$(git ls-remote origin "refs/tags/$TAG")
-          if [ -n "$REMOTE_TAG" ]; then
-            git fetch --no-tags origin "refs/tags/$TAG"
-            if [ "$(git rev-parse 'FETCH_HEAD^{commit}')" != "$GITHUB_SHA" ]; then
-              echo 'The existing release tag does not match the checked-out commit.' >&2
-              exit 1
-            fi
-          fi
-          printf 'version=%s\nrelease_name=%s\nbuild_number=%s\ntag=v%s\n' "$VERSION" "$RELEASE_NAME" "$BUILD_NUMBER" "$RELEASE_NAME" >> "$GITHUB_OUTPUT"
+          printf 'version=%s\nrelease_name=%s\nbuild_number=%s\ntag=%s\n' "$VERSION" "$RELEASE_NAME" "$BUILD_NUMBER" "$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Check required release configuration
         env:
@@ -114,7 +98,7 @@ jobs:
           PRERELEASE=false
           case "$RELEASE_NAME" in *-rc.*) PRERELEASE=true ;; esac
           gh release create "$TAG" "dist/release/Larkdown-$RELEASE_NAME"/* \
-            --target "$GITHUB_SHA" --title "Larkdown $RELEASE_NAME" \
+            --verify-tag --title "Larkdown $RELEASE_NAME" \
             --draft --prerelease="$PRERELEASE" --notes-file RELEASE_NOTES.md
 
       - name: Remove temporary signing material
