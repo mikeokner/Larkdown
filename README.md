@@ -16,9 +16,9 @@
   </p>
 </p>
 
-_Built as a universal native Swift app for macOS._
-
 ![screenshot](./assets/screenshot.png)
+
+_Built as a universal native Swift app for macOS._
 
 ## About
 
